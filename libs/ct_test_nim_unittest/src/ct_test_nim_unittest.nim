@@ -52,6 +52,14 @@ defineCliInterface buildNimUnittest, NimUnittestToolId:
     boolFlag threadsOn is bool, alias = "--threads:on"
     boolFlag hintsOff is bool, alias = "--hints:off"
     boolFlag warningsOff is bool, alias = "--warnings:off"
+    flag defines is seq[string],
+      alias = "--define:",
+      format = concat,
+      repeated = true
+    flag imports is seq[string],
+      alias = "--import:",
+      format = concat,
+      repeated = true
     outputs testBinary is NimUnittestBinary, binary
 
 proc run*(self: NimUnittestBinary; filter = "";

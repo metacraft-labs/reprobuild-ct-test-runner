@@ -1,6 +1,7 @@
 switch("styleCheck", "hint")
 switch("path", "libs/ct_test_interface/src")
 switch("path", "libs/ct_test_nim_unittest/src")
+switch("path", "libs/ct_test_unittest_parallel/src")
 
 # The Nim-unittest adapter declares an `executable` using reprobuild's
 # project DSL. The DSL source lives in the sibling reprobuild repo.
