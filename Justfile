@@ -4,8 +4,15 @@ default:
     just lint
 
 build:
-    @echo "No apps to build yet — ct-test ships libraries only at this stage."
-    @echo "Future: builds apps/ct-test-runner/."
+    mkdir -p build/bin build/nimcache
+    nim c \
+        -d:release \
+        --threads:on \
+        --hints:off \
+        --warnings:off \
+        --nimcache:build/nimcache/ct_test_runner \
+        --out:build/bin/ct-test-runner \
+        apps/ct-test-runner/ct_test_runner.nim
 
 test:
     mkdir -p test-logs
