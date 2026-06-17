@@ -200,7 +200,17 @@ proc build*(tool: BuildNimUnittest;
     depfile = depfile,
     cacheable = cacheable,
     commandStatsId = commandStatsId,
-    dependencyPolicy = declaredOnlyDependencyPolicy(),
+    # Dependency-correctness: a test binary's compile reads far more than its
+    # top-level ``source`` — every transitively imported Nim module
+    # (``repro_test_support``, the libs under test, the stdlib) is pulled in
+    # via ``--path``. ``declaredOnly`` tracked ONLY ``source``, so editing a
+    # depended-on lib never invalidated the binary (its fingerprint was
+    # unchanged) and ``repro build`` reported it up-to-date with a stale
+    # binary — which then fed a stale test execute edge. ``automaticMonitor``
+    # records every file the compile actually reads, so any input change
+    # invalidates the binary and, transitively, its execute edge. Matches the
+    # ``nim.c`` app/helper edges, which already declare ``automaticMonitor``.
+    dependencyPolicy = automaticMonitorPolicy(),
     actionCachePolicy = actionCachePolicy)
 
   # Typed-Outputs M1 binding: populate ``edge.testBinary`` with a
@@ -276,7 +286,7 @@ proc run*(self: NimUnittestBinary; filter = "";
     deps = combineActionDeps(deps, after),
     extraInputs = allExtraInputs,
     cacheable = cacheable,
-    dependencyPolicy = declaredOnlyDependencyPolicy(),
+    dependencyPolicy = automaticMonitorPolicy(),
     actionCachePolicy = actionCachePolicy)
   if registerImplicitName:
     let implicitNames = computeImplicitTargetNames(call, @["binary"])
@@ -304,7 +314,7 @@ proc runTest*(self: NimUnittestBinary; testName: string;
     else: defaultToolActionId(call)
   result = recordToolInvocation(selectedActionId, call,
     deps = combineActionDeps(deps, after),
-    dependencyPolicy = declaredOnlyDependencyPolicy())
+    dependencyPolicy = automaticMonitorPolicy())
   let implicitNames = computeImplicitTargetNames(call, @["binary"])
   if implicitNames.len > 0:
     setRegisteredActionTargetNames(result.id, implicitNames)
@@ -329,7 +339,7 @@ proc list*(self: NimUnittestBinary;
     else: defaultToolActionId(call)
   result = recordToolInvocation(selectedActionId, call,
     deps = combineActionDeps(deps, after),
-    dependencyPolicy = declaredOnlyDependencyPolicy())
+    dependencyPolicy = automaticMonitorPolicy())
   let implicitNames = computeImplicitTargetNames(call, @["binary"])
   if implicitNames.len > 0:
     setRegisteredActionTargetNames(result.id, implicitNames)
