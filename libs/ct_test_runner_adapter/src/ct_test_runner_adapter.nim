@@ -1,117 +1,46 @@
-## ct_test_runner_adapter — Spec-Implementation M4
+## ct_test_runner_adapter — in-process ``TestRunner`` adapter.
 ##
-## The ``TestRunner`` cross-cutting-interface adapter that satisfies the
-## interface declared in M3 at
-## ``reprobuild/libs/repro_dsl_stdlib/src/repro_dsl_stdlib/interfaces/test_runner.nim``.
-## The adapter delegates RUN to the existing ``ct-test-runner`` binary at
-## ``ct-test/apps/ct-test-runner/`` (a one-binary positional invocation,
-## with ``--filter`` mapping the ``filter`` argument) and delegates LIST
-## / ENUMERATE to the binary's own Tier-1 "Standard" binary protocol
-## (``--list`` / ``--list-json``).
+## Satisfies the ``TestRunner`` cross-cutting contract declared in the
+## standalone ``repro_test_adapters`` package (Nim package
+## ``repro_test_adapters``; repo ``reprobuild-test-adapters``). This
+## library is meant to be *linked into the reprobuild process* — the
+## reprobuild project that installs it recognizes the same ``TestRunner``
+## type because it depends on the same shared contract package. Hosting
+## the contract there (rather than in the reprobuild engine) is what lets
+## this adapter depend on the engine-free contract instead of the engine,
+## so installing the adapter does not couple reprobuild back to an
+## adapter repo.
 ##
-## Usage from a reprobuild project file::
+## All three vtable methods run **in-process** against the test binary's
+## own protocol — there is no longer a separate ``ct-test-runner``
+## orchestrator executable to locate or spawn:
 ##
-##   import ct_test_nim_unittest
-##   import ct_test_runner_adapter
+##   * ``run``  — execute the binary. With no filter the binary runs its
+##     whole suite and its native exit code is forwarded; with a filter
+##     the binary's ``--run "<suite>::<test>"`` single-test protocol is
+##     used.
+##   * ``list`` — query the binary's ``--list-json`` catalog.
+##   * ``enumerate`` — query the binary's ``--list`` (one qualified name
+##     per line).
 ##
-##   # The import-time hook below detects an active build context and
-##   # calls setTestRunner(ctx, ctTestRunner()). Recipes can also wire
-##   # the adapter explicitly via `installCtTestRunner(currentBuildContext())`
-##   # inside a `build:` block, which is the path the M4 integration
-##   # test exercises.
-##
-## Locating the runner: the adapter resolves the runner binary in this
-## order:
-##
-##   1. ``$CT_TEST_RUNNER`` (absolute path override; honoured for
-##      developer-checkout setups and the M4 integration tests).
-##   2. ``ct-test-runner`` on ``$PATH`` (the production hop, exercised
-##      under ``nix develop`` once the binary is built and installed).
-##   3. The default ``../ct-test/build/bin/ct-test-runner`` relative to
-##      the active project root (the developer-checkout fallback).
-##
-## The resolved path is captured once at adapter construction time so
-## later ``run`` invocations don't pay the lookup cost.
+## The build context wiring (``setTestRunner``) lives on the consumer
+## side: a reprobuild project installs this adapter by calling
+## ``currentBuildContext().setTestRunner(ctTestRunner())`` (see the
+## reprobuild-side ``install_ct_test_runner`` helper), so this library
+## carries no dependency on the reprobuild engine — only on the shared
+## ``repro_test_adapters`` contract.
 
 import std/[json, os, osproc, strutils]
 
-import repro_dsl_stdlib/interfaces/test_runner
-export test_runner
-
-import repro_dsl_stdlib/active_context
-export active_context
-
-import repro_project_dsl
-
-const
-  RunnerBinaryEnv* = "CT_TEST_RUNNER"
-    ## Env-var override read at adapter construction time.
-  DefaultRunnerName* = "ct-test-runner"
-    ## ``$PATH`` lookup name when no env override is set.
-
-type
-  CtTestRunnerAdapterState* = ref object
-    ## Captured runner location plus any metadata the closures need at
-    ## execution time. Stored as a closure-captured ref so the
-    ## ``TestRunner`` vtable's procs share one resolution result.
-    runnerPath*: string
-      ## Absolute path to the resolved ``ct-test-runner`` binary, or
-      ## the bare basename when the binary was located via ``$PATH``.
-    runnerName*: string
-      ## Stable identifier for diagnostics
-      ## (``"ct-test-runner-adapter"``).
-
-proc resolveRunnerPath(explicit: string = ""): string =
-  ## Three-tier resolution. The explicit override is the M4-test
-  ## escape hatch (``ctTestRunner(runnerPath = abspath)``).
-  if explicit.len > 0:
-    return explicit
-  let env = getEnv(RunnerBinaryEnv)
-  if env.len > 0:
-    return env
-  let found = findExe(DefaultRunnerName)
-  if found.len > 0:
-    return found
-  # Final fallback — the developer-checkout layout assumed by the
-  # ct-test ``just build`` recipe. The caller will get a clean
-  # ``OSError`` from ``startProcess`` if the binary doesn't exist;
-  # we don't preemptively raise here so adapter construction stays
-  # side-effect-free.
-  "ct-test-runner"
-
-proc adapterRunInvocation(state: CtTestRunnerAdapterState;
-                          binary: TestBinary; filter: string): ExitCode =
-  ## Spawn ``ct-test-runner <binary> [--filter <filter>]`` as a single
-  ## positional-binary invocation. The runner's argv shape supports a
-  ## positional binary path that takes precedence over its
-  ## ``--bin-dir`` scan, so a single ``TestBinary`` flows in cleanly.
-  if binary.path.len == 0:
-    return -1
-  if state.runnerPath.len == 0:
-    return -1
-  var argv: seq[string] = @[state.runnerPath, "run", binary.path]
-  if filter.len > 0:
-    # ct-test-runner's ``parseopt``-driven CLI parses ``--filter=<v>``
-    # but treats space-separated ``--filter <v>`` as a missing value
-    # plus a trailing positional binary. Use the equals form to keep
-    # ``filter`` from leaking into ``positionalBinaries``.
-    argv.add("--filter=" & filter)
-  try:
-    var quoted: seq[string] = @[]
-    for piece in argv:
-      quoted.add(quoteShell(piece))
-    let cmdline = quoted.join(" ")
-    execShellCmd(cmdline)
-  except OSError:
-    -1
+import repro_test_adapters
+export repro_test_adapters
 
 proc parseListJsonCatalog(payload: string): seq[TestCase] =
-  ## Parse the binary's ``--list-json`` output. Schema per
-  ## ``ct_test_unittest_parallel`` (Tier-1 "Standard"): top-level
-  ## object with ``tests`` array whose entries carry ``suite`` and
-  ## ``name`` fields. ``name`` may already be qualified
-  ## (``suite::test``); the parser normalises so ``qualifiedName``
-  ## always includes the suite prefix once.
+  ## Parse the binary's ``--list-json`` output. Schema (Tier-1
+  ## "Standard"): a top-level object with a ``tests`` array whose entries
+  ## carry ``suite`` and ``name`` fields. ``name`` may already be
+  ## qualified (``suite::test``); the parser normalises so
+  ## ``qualifiedName`` always includes the suite prefix once.
   result = @[]
   let trimmed = payload.strip()
   if trimmed.len == 0:
@@ -139,12 +68,28 @@ proc parseListJsonCatalog(payload: string): seq[TestCase] =
       else: qualified
     result.add(TestCase(qualifiedName: qualified, displayName: display))
 
+proc adapterRunInvocation(binary: TestBinary; filter: string): ExitCode =
+  ## Run the test binary in-process (as a direct child of the reprobuild
+  ## process). With no filter the binary runs its whole suite; with a
+  ## filter the binary's ``--run "<name>"`` single-test protocol selects
+  ## one case. The binary's native exit code is forwarded verbatim
+  ## (0 pass / non-zero fail), matching the contract's ``run`` semantics.
+  if binary.path.len == 0:
+    return -1
+  var argv: seq[string] = @[quoteShell(binary.path)]
+  if filter.len > 0:
+    # The binary's single-test protocol is ``--run "<suite>::<test>"``.
+    argv.add("--run")
+    argv.add(quoteShell(filter))
+  try:
+    execShellCmd(argv.join(" "))
+  except OSError:
+    -1
+
 proc adapterListInvocation(binary: TestBinary): seq[TestCase] =
-  ## Invoke the binary's own ``--list-json`` protocol entry point and
-  ## return the structured catalog. The binary is the source of truth
-  ## for the case list (ct-test-runner's catalog is itself derived from
-  ## this); querying the binary directly avoids the runner's worker-
-  ## pool overhead for what should be a single-process lookup.
+  ## Query the binary's own ``--list-json`` protocol entry point and
+  ## return the structured catalog. The binary is the source of truth for
+  ## its case list.
   if binary.path.len == 0:
     return @[]
   let (output, exitCode) =
@@ -157,9 +102,9 @@ proc adapterListInvocation(binary: TestBinary): seq[TestCase] =
   parseListJsonCatalog(output)
 
 proc adapterEnumerateInvocation(binary: TestBinary): seq[QualifiedName] =
-  ## Invoke the binary's ``--list`` protocol entry point — one
-  ## qualified name per line. Skips blank lines so partial output
-  ## from a malformed binary doesn't produce empty entries.
+  ## Query the binary's ``--list`` protocol entry point — one qualified
+  ## name per line. Skips blank lines so partial output from a malformed
+  ## binary doesn't produce empty entries.
   if binary.path.len == 0:
     return @[]
   let (output, exitCode) =
@@ -175,54 +120,17 @@ proc adapterEnumerateInvocation(binary: TestBinary): seq[QualifiedName] =
       continue
     result.add(line)
 
-proc ctTestRunner*(runnerPath: string = ""): TestRunner =
-  ## Construct a fully populated ``TestRunner`` whose vtable delegates
-  ## to ``ct-test-runner`` for ``run`` and to the test binary's own
-  ## protocol for ``list`` / ``enumerate``. The ``runnerPath`` argument
-  ## overrides the three-tier resolution so M4 integration tests can
-  ## point at a known-good location without touching the env.
-  let state = CtTestRunnerAdapterState(
-    runnerPath: resolveRunnerPath(runnerPath),
-    runnerName: "ct-test-runner-adapter")
+proc ctTestRunner*(): TestRunner =
+  ## Construct a fully populated ``TestRunner`` whose vtable runs the test
+  ## binary in-process via its own ``--run`` / ``--list-json`` / ``--list``
+  ## protocol. The reprobuild project installs the returned value via the
+  ## active build context's ``setTestRunner`` (engine-side; see the
+  ## reprobuild ``install_ct_test_runner`` helper).
   newTestRunner(
-    name = state.runnerName,
+    name = "ct-test-runner-adapter",
     run = proc(binary: TestBinary; filter: string): ExitCode =
-      adapterRunInvocation(state, binary, filter),
+      adapterRunInvocation(binary, filter),
     list = proc(binary: TestBinary): seq[TestCase] =
       adapterListInvocation(binary),
     enumerate = proc(binary: TestBinary): seq[QualifiedName] =
       adapterEnumerateInvocation(binary))
-
-proc installCtTestRunner*(ctx: BuildContext;
-                         runnerPath: string = "") =
-  ## Wire the adapter into the active build context. Called explicitly
-  ## from inside a recipe's ``build:`` block, or implicitly via
-  ## ``tryAutoInstall`` below when this module is imported by a
-  ## project file that uses ``ct_test_nim_unittest``.
-  ctx.setTestRunner(ctTestRunner(runnerPath))
-
-proc tryAutoInstall*() =
-  ## Best-effort load-time hook: if a build context is currently
-  ## active when this module is imported (i.e. the module is imported
-  ## *inside* a ``build:`` block), install the adapter. Outside of an
-  ## active build context this is a no-op so that adapter-test files
-  ## and standalone unit tests can ``import ct_test_runner_adapter``
-  ## without erroring.
-  ##
-  ## Recipes that want the adapter wired BEFORE the first
-  ## ``currentBuildContext()`` access (the M3 lazy-install path
-  ## otherwise hands out ``defaultTestRunner()`` first) call
-  ## ``installCtTestRunner(currentBuildContext())`` explicitly from
-  ## inside their ``build:`` block. The M4 integration test exercises
-  ## both paths.
-  let state = tryCurrentBuildState()
-  if state == nil:
-    return
-  let ctx = currentBuildContext()
-  installCtTestRunner(ctx)
-
-# Adapter-load-time wiring. The proc above is a no-op outside an active
-# build: block, so `import ct_test_runner_adapter` from a module-level
-# context is safe — the call only fires when an importing
-# package is mid-evaluation of its `build:` block.
-tryAutoInstall()

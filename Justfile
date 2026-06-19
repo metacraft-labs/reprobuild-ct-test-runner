@@ -4,15 +4,8 @@ default:
     just lint
 
 build:
-    mkdir -p build/bin build/nimcache
-    nim c \
-        -d:release \
-        --threads:on \
-        --hints:off \
-        --warnings:off \
-        --nimcache:build/nimcache/ct_test_runner \
-        --out:build/bin/ct-test-runner \
-        apps/ct-test-runner/ct_test_runner.nim
+    @echo "reprobuild-ct-test-runner is a library (ct_test_runner_adapter)."
+    @echo "Nothing to build as a binary; run 'just test' to compile + run the suite."
 
 test:
     mkdir -p test-logs
