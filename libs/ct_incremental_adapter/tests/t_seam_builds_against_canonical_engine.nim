@@ -1,25 +1,27 @@
-## t_seam_builds_against_canonical_engine — the M0b-1 build test.
+## t_seam_builds_against_canonical_engine — the adapter build/decoupling test.
 ##
 ## Asserts (by the very fact this binary COMPILES and runs) that
-## ``ct_incremental_adapter`` builds while importing codetracer's CANONICAL
-## engine via the sibling path wired in ``config.nims`` — with:
+## ``ct_incremental_adapter`` builds STANDALONE — importing only std modules,
+## with:
 ##
-##   * NO vendored engine copy in this repo (the engine modules live only in
-##     codetracer, imported as a sibling), and
+##   * NO codetracer engine source on the path (the engine is reached at RUNTIME
+##     by execing the ``ct`` binary, not by linking ``incremental/engine``), and
 ##   * NO reprobuild dependency (the adapter imports nothing from reprobuild;
-##     the dependency edge is one-way: this repo → codetracer, never reprobuild).
+##     the dependency edge is one-way: this repo → codetracer's ``ct`` binary,
+##     never reprobuild).
 ##
-## Beyond the import succeeding, this asserts the seam's PUBLIC surface is
-## present and wired to codetracer's engine types: the ``WatchEdgeDecision`` /
-## ``WatchEdgeAction`` value contract reprobuild binds against, and the engine's
-## re-exported ``IncrementalDecisionKind`` (proving the engine is genuinely in
-## scope through the adapter, not a stub).
+## If the adapter still imported codetracer's engine, this file would fail to
+## compile without the engine sources/trace-format-nim/results/zstd on the path —
+## so a green compile here IS the decoupling assertion. Beyond compiling, this
+## asserts the seam's PUBLIC surface (the value contract reprobuild binds
+## against) is present and the pure ``defaultCachePath`` helper matches the
+## engine's layout.
 
-import std/unittest
+import std/[unittest, os, strutils]
 
 import ct_incremental_adapter
 
-suite "M0b-1 — adapter builds against codetracer's canonical engine":
+suite "adapter builds standalone (engine reached via the ct subprocess)":
 
   test "watch seam types are present (reprobuild's value contract)":
     # The exact union reprobuild's repro_cli_support call site binds against.
@@ -30,20 +32,26 @@ suite "M0b-1 — adapter builds against codetracer's canonical engine":
     check d.action == weaRun
     check d.changedFuncs == @["f"]
 
-  test "codetracer engine is re-exported through the adapter":
-    # If the canonical engine were not actually imported, these engine symbols
-    # would be undeclared and this file would not compile. Referencing them
-    # proves the engine is in scope via the adapter (not a local stub).
-    check idRunFresh != idSkipUnchanged
-    check idRerunChanged != idRerunFailSafe
-    # The engine's cache constructor + fail-safe loader are reachable too.
-    let cache = initCache("/tmp/ct_seam_build_probe_cache.json")
-    check cache.path == "/tmp/ct_seam_build_probe_cache.json"
-    let loaded = loadCache("/tmp/ct_seam_build_probe_nonexistent.json")
-    check loaded.isOk        # a missing cache loads fresh (Ok), per the engine.
+  test "defaultCachePath matches codetracer's engine layout":
+    # The adapter replicates the engine's path (``<root>/.ct-incremental/
+    # cache.json``) purely, so reprobuild computes the same cache file the ct
+    # binary reads/writes.
+    check defaultCachePath("/proj") == "/proj" / ".ct-incremental" / "cache.json"
+    check defaultCachePath(".") == "." / ".ct-incremental" / "cache.json"
 
   test "watchTestEdgeDecision symbol is exported and callable":
-    # A non-existent trace/cache: the engine's fail-safe path runs, never skips.
+    # With no ct on PATH/CT_BIN, the exec fails → fail-safe RUN (never skip).
+    putEnv("CT_BIN", "/nonexistent/ct-binary-does-not-exist")
     let d = watchTestEdgeDecision("t", "/nonexistent/trace", "/nonexistent",
                                   "/nonexistent/cache.json")
-    check d.action == weaRun   # fresh (empty cache) — a run, never a silent skip.
+    check d.action == weaRun                 # fail-safe — never a silent skip.
+    check d.reason.startsWith("error:")
+    delEnv("CT_BIN")
+
+  test "recordWatchTestEdge symbol is exported and callable":
+    putEnv("CT_BIN", "/nonexistent/ct-binary-does-not-exist")
+    let r = recordWatchTestEdge("t", "/nonexistent/trace", "/nonexistent",
+                                "/nonexistent/cache.json")
+    check not r.ok                           # missing ct ⇒ honest failure.
+    check r.error.len > 0
+    delEnv("CT_BIN")

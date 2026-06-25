@@ -1,206 +1,128 @@
-## t_adapter_incremental_seam — the M0b-1 seam test.
+## t_adapter_incremental_seam — the watch-decision seam protocol test.
 ##
-## Proves that ``watchTestEdgeDecision`` exposed by ``ct_incremental_adapter``
-## returns the SAME skip/re-run verdict that codetracer's canonical engine
-## (`decide`) makes — i.e. the adapter is thin GLUE over codetracer's engine,
-## not a reimplementation:
+## Proves that ``watchTestEdgeDecision`` / ``recordWatchTestEdge`` correctly
+## SPEAK the granular ``ct test --incremental --watch-decide`` / ``--watch-record``
+## protocol: they exec the ``ct`` binary, parse its one-line JSON, and map it to
+## the ``WatchEdgeDecision`` / ok-error contract reprobuild binds against.
 ##
-##   * an UNCHANGED test edge ⇒ ``weaSkip`` (``reason == "unchanged"``), the
-##     translation of the engine's ``idSkipUnchanged``;
-##   * editing an EXECUTED function ⇒ ``weaRun`` NAMING the changed function in
-##     ``changedFuncs``, the translation of the engine's ``idRerunChanged``;
-##   * editing a NON-executed function ⇒ ``weaSkip`` (the executed set is
-##     unaffected);
-##   * an unknown test edge ⇒ ``weaRun`` (``reason == "fresh"``), the engine's
-##     ``idRunFresh``;
-##   * a missing/unreadable cache file ⇒ ``weaRun`` fail-safe — never a silent
-##     skip.
+## The adapter's responsibility is the PROCESS SEAM (exec + parse + map +
+## fail-safe), NOT the decision itself — codetracer's engine owns and tests the
+## decision. So here we drive the seam with a FAKE ``ct`` (a tiny script pointed
+## to by ``$CT_BIN``) that emits scripted JSON for each engine outcome, and
+## assert the adapter's mapping and, crucially, its fail-safe behavior:
 ##
-## To PROVE it is codetracer's engine deciding (not a constant), each case is
-## also cross-checked against the engine's own ``decide`` over the SAME on-disk
-## cache + source tree: the adapter's ``WatchEdgeAction`` must agree with the
-## engine's ``IncrementalDecisionKind`` on every case.
+##   * ``{"status":"skip"}``               ⇒ ``weaSkip`` (``reason == "unchanged"``)
+##   * ``{"status":"run","reason":"fresh"}`` ⇒ ``weaRun`` (``reason == "fresh"``)
+##   * ``{"status":"run","reason":"changed: used_a","changedFuncs":["used_a"]}``
+##                                          ⇒ ``weaRun`` naming ``used_a``
+##   * ct exits non-zero                    ⇒ ``weaRun`` fail-safe (``error: …``)
+##   * ct emits unparseable output          ⇒ ``weaRun`` fail-safe (``error: …``)
+##   * ct missing entirely                  ⇒ ``weaRun`` fail-safe (``error: …``)
+##   * gate disabled                        ⇒ ``weaRun`` WITHOUT execing ct
 ##
-## The seam loads the cache FROM DISK (``loadCache``), so the test drives the
-## full canonical path: ``initCache`` + engine ``record`` + ``saveCache`` to
-## materialize the cache, then ``watchTestEdgeDecision`` to read it back and
-## decide. The cache is the only carrier between record and decide.
-##
-## Fixture: codetracer's committed ``m0_three_funcs`` Ruby trace + source
-## (the same fixture the engine's own M0 parity test uses), resolved via the
-## same sibling/env wiring as ``config.nims``.
+## A fail-safe is ALWAYS a re-run, never a silent skip: losing/breaking the
+## engine binary can never cause a test that should run to be skipped.
 
-import std/[unittest, os, strutils, times]
+import std/[unittest, os, strutils]
 
 import ct_incremental_adapter
-  # exposes watchTestEdgeDecision + WatchEdgeDecision/weaSkip/weaRun, AND
-  # re-exports codetracer's engine (initCache/record/saveCache/decide/…).
 
 # ---------------------------------------------------------------------------
-# Locate codetracer's committed m0_three_funcs fixture (engine-side).
-# Resolution MIRRORS config.nims: CODETRACER_CT_TEST_SRC env, else the sibling
-# checkout next to this repo.
+# A fake `ct` binary: emits $CT_FAKE_OUT to stdout and exits $CT_FAKE_CODE.
+# Pointed to via $CT_BIN, it lets us script every engine outcome the adapter
+# must map — without codetracer's engine present.
 # ---------------------------------------------------------------------------
 
-proc ctTestSrcDir(): string =
-  let env = getEnv("CODETRACER_CT_TEST_SRC")
-  if env.len > 0:
-    return env
-  # tests/<this file> -> ct_incremental_adapter -> libs -> repo root -> ws root
-  let repoRoot = currentSourcePath().parentDir.parentDir.parentDir.parentDir
-  repoRoot.parentDir / "codetracer" / "src" / "ct_test"
+let fakeCt = getTempDir() / "ct_fake_seam.sh"
 
-let
-  fixturesDir = ctTestSrcDir() / "incremental" / "fixtures"
-  threeFuncsFixture = fixturesDir / "m0_three_funcs"
-  threeFuncsTrace = threeFuncsFixture / "trace"
-  # The trace records the source path as
-  # `/fixtures/m0_three_funcs/src/three_funcs.rb`; the engine strips the leading
-  # slash and resolves it under `sourceRoot`, so the temp source must live at
-  # `<sourceRoot>/fixtures/m0_three_funcs/src/three_funcs.rb`.
-  relSourcePath = "fixtures/m0_three_funcs/src/three_funcs.rb"
-  sourceTestId = "fixture::three_funcs"
+proc installFakeCt() =
+  writeFile(fakeCt, "#!/bin/sh\nprintf '%s\\n' \"$CT_FAKE_OUT\"\nexit ${CT_FAKE_CODE:-0}\n")
+  inclFilePermissions(fakeCt, {fpUserExec, fpGroupExec, fpOthersExec})
+  putEnv("CT_BIN", fakeCt)
 
-# Fail loudly (not skip) if the codetracer sibling is absent — the build itself
-# would already have failed to import the engine, but a clear runtime message
-# pinpoints the missing fixture if only the fixtures are absent.
-doAssert dirExists(threeFuncsTrace),
-  "codetracer m0_three_funcs trace fixture not found at " & threeFuncsTrace &
-  " (set CODETRACER_CT_TEST_SRC or check out the codetracer sibling)"
+proc setFake(output: string; code = 0) =
+  putEnv("CT_FAKE_OUT", output)
+  putEnv("CT_FAKE_CODE", $code)
 
-var counter = 0
+proc decideWith(output: string; code = 0): WatchEdgeDecision =
+  setFake(output, code)
+  watchTestEdgeDecision("t::id", "/trace", "/root", "/cache.json")
 
-proc makeSourceRoot(): string =
-  ## Fresh temp dir with the fixture source copied to the path the trace expects.
-  inc counter
-  let stamp = (epochTime() * 1_000_000.0).int64
-  let root = getTempDir() / ("ct_seam_src_" & $stamp & "_" & $counter)
-  let dst = root / relSourcePath
-  createDir(dst.parentDir)
-  copyFile(threeFuncsFixture / "src" / "three_funcs.rb", dst)
-  root
+suite "watch-decision seam — ct subprocess protocol":
 
-proc editFunctionBody(root, funcName, newBody: string) =
-  let path = root / relSourcePath
-  var lines = readFile(path).split('\n')
-  for i in 0 ..< lines.len:
-    if lines[i].strip() == "def " & funcName:
-      doAssert i + 1 < lines.len
-      lines[i + 1] = "  " & newBody
-      writeFile(path, lines.join("\n"))
-      return
-  doAssert false, "function not found: " & funcName
+  setup:
+    installFakeCt()
 
-proc recordToDisk(root, cachePath: string) =
-  ## Drive codetracer's CANONICAL engine to record a baseline cache to disk.
-  ## This is the engine's `record` + `saveCache` — the same machinery
-  ## `watchTestEdgeDecision`'s `loadCache` reads back.
-  var cache = initCache(cachePath)
-  check record(cache, sourceTestId, threeFuncsTrace, root).isOk
-  check saveCache(cache).isOk
+  teardown:
+    delEnv("CT_BIN"); delEnv("CT_FAKE_OUT"); delEnv("CT_FAKE_CODE")
 
-suite "M0b-1 — watchTestEdgeDecision seam backed by codetracer's engine":
-
-  test "unchanged_source_skips (engine idSkipUnchanged -> weaSkip)":
-    let root = makeSourceRoot()
-    let cachePath = root / "cache.json"
-    recordToDisk(root, cachePath)
-
-    let d = watchTestEdgeDecision(sourceTestId, threeFuncsTrace, root, cachePath)
+  test "skip status maps to weaSkip":
+    let d = decideWith("""{"status":"skip","reason":"unchanged","changedFuncs":[]}""")
     check d.action == weaSkip
     check d.reason == "unchanged"
-    check d.testId == sourceTestId
+    check d.testId == "t::id"
 
-    # Prove it is codetracer's engine deciding: the engine's own `decide` over
-    # the same on-disk cache must agree.
-    let cache = loadCache(cachePath).value
-    check decide(sourceTestId, threeFuncsTrace, root, cache).kind ==
-      idSkipUnchanged
-
-  test "changed_executed_function_reruns_naming_it (idRerunChanged -> weaRun)":
-    let root = makeSourceRoot()
-    let cachePath = root / "cache.json"
-    recordToDisk(root, cachePath)
-    editFunctionBody(root, "used_a", "42 + 1")
-
-    let d = watchTestEdgeDecision(sourceTestId, threeFuncsTrace, root, cachePath)
-    check d.action == weaRun
-    check "used_a" in d.changedFuncs
-    check d.reason.startsWith("changed:")
-    check "used_a" in d.reason
-
-    # Engine agreement: `decide` independently reports idRerunChanged naming
-    # the same function.
-    let cache = loadCache(cachePath).value
-    let ed = decide(sourceTestId, threeFuncsTrace, root, cache)
-    check ed.kind == idRerunChanged
-    check "used_a" in ed.changedFuncs
-    # The adapter faithfully forwards the engine's changed set verbatim.
-    check d.changedFuncs == ed.changedFuncs
-
-  test "changed_unexecuted_function_skips (executed set unaffected)":
-    let root = makeSourceRoot()
-    let cachePath = root / "cache.json"
-    recordToDisk(root, cachePath)
-    editFunctionBody(root, "unused_c", "999")
-
-    let d = watchTestEdgeDecision(sourceTestId, threeFuncsTrace, root, cachePath)
-    check d.action == weaSkip
-
-    let cache = loadCache(cachePath).value
-    check decide(sourceTestId, threeFuncsTrace, root, cache).kind ==
-      idSkipUnchanged
-
-  test "unknown_test_runs_fresh (idRunFresh -> weaRun)":
-    let root = makeSourceRoot()
-    let cachePath = root / "cache.json"
-    recordToDisk(root, cachePath)
-
-    let d = watchTestEdgeDecision("never::recorded", threeFuncsTrace, root,
-                                  cachePath)
+  test "fresh run maps to weaRun":
+    let d = decideWith("""{"status":"run","reason":"fresh","changedFuncs":[]}""")
     check d.action == weaRun
     check d.reason == "fresh"
 
-    let cache = loadCache(cachePath).value
-    check decide("never::recorded", threeFuncsTrace, root, cache).kind ==
-      idRunFresh
-
-  test "missing_cache_file_is_fresh_run (engine fresh, never a silent skip)":
-    # A non-existent cache path: codetracer's `loadCache` returns a FRESH empty
-    # cache (Ok), so every test decides idRunFresh — a run, never a skip.
-    let root = makeSourceRoot()
-    let cachePath = root / "does-not-exist.json"
-    let d = watchTestEdgeDecision(sourceTestId, threeFuncsTrace, root, cachePath)
+  test "changed run forwards reason + changedFuncs verbatim":
+    let d = decideWith(
+      """{"status":"run","reason":"changed: used_a","changedFuncs":["used_a"]}""")
     check d.action == weaRun
-    check d.reason == "fresh"
+    check d.reason == "changed: used_a"
+    check d.changedFuncs == @["used_a"]
 
-  test "malformed_cache_file_is_failsafe_run (never a silent skip)":
-    # A corrupt cache file: codetracer's `loadCache` returns Err, and the seam
-    # MUST translate that to a fail-safe re-run — losing the cache can never
-    # cause a test that should run to be skipped.
-    let root = makeSourceRoot()
-    let cachePath = root / "cache.json"
-    writeFile(cachePath, "{ this is not valid json ")
-    let d = watchTestEdgeDecision(sourceTestId, threeFuncsTrace, root, cachePath)
+  test "non-zero ct exit is a fail-safe run (never a silent skip)":
+    let d = decideWith("""{"status":"skip","reason":"unchanged"}""", code = 1)
     check d.action == weaRun
     check d.reason.startsWith("error:")
 
-  test "gate_disabled_short_circuits_to_run_without_touching_cache":
-    # The legacy/no-flag path: the gate is disabled, so the seam returns a run
-    # verdict WITHOUT consulting the engine (proving the no-flag path can never
-    # skip). A bogus cache path is supplied to prove it is never read.
+  test "unparseable ct output is a fail-safe run":
+    let d = decideWith("not json at all")
+    check d.action == weaRun
+    check d.reason.startsWith("error:")
+
+  test "ct emitting warnings before the JSON line still parses":
+    # ct may print hints/warnings before the result; the adapter reads the LAST
+    # non-empty line as JSON.
+    let d = decideWith("warning: something\n{\"status\":\"skip\"}")
+    check d.action == weaSkip
+
+  test "recordWatchTestEdge maps ok":
+    setFake("""{"ok":true,"error":""}""")
+    let r = recordWatchTestEdge("t::id", "/trace", "/root", "/cache.json")
+    check r.ok
+    check r.error == ""
+
+  test "recordWatchTestEdge maps an engine error":
+    setFake("""{"ok":false,"error":"trace missing"}""")
+    let r = recordWatchTestEdge("t::id", "/trace", "/root", "/cache.json")
+    check not r.ok
+    check r.error == "trace missing"
+
+  test "recordWatchTestEdge fail-safes on non-zero ct exit":
+    setFake("""{"ok":true}""", code = 2)
+    let r = recordWatchTestEdge("t::id", "/trace", "/root", "/cache.json")
+    check not r.ok
+    check r.error.len > 0
+
+suite "watch-decision seam — gate + missing-binary fail-safe":
+
+  test "gate disabled short-circuits to run WITHOUT execing ct":
+    # CT_BIN points at a bomb that would FAIL if executed; the disabled gate must
+    # never reach it.
+    putEnv("CT_BIN", "/nonexistent/ct-should-not-run")
     let gate = WatchCtIncrementalGate(enabled: false)
-    let d = gatedWatchDecision(gate, sourceTestId, threeFuncsTrace,
-                               "/nonexistent", "/nonexistent/cache.json")
+    let d = gatedWatchDecision(gate, "t::id", "/trace", "/root", "/cache.json")
     check d.action == weaRun
     check d.reason == "ct-incremental-disabled"
+    delEnv("CT_BIN")
 
-  test "gate_enabled_delegates_to_seam (engine decides skip)":
-    let root = makeSourceRoot()
-    let cachePath = root / "cache.json"
-    recordToDisk(root, cachePath)
-    let gate = WatchCtIncrementalGate(enabled: true)
-    let d = gatedWatchDecision(gate, sourceTestId, threeFuncsTrace, root,
-                               cachePath)
-    check d.action == weaSkip
-    check d.reason == "unchanged"
+  test "missing ct binary is a fail-safe run":
+    putEnv("CT_BIN", "/nonexistent/ct-does-not-exist")
+    let d = watchTestEdgeDecision("t::id", "/trace", "/root", "/cache.json")
+    check d.action == weaRun
+    check d.reason.startsWith("error:")
+    delEnv("CT_BIN")
