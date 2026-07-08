@@ -1,0 +1,9 @@
+schema = "reprobuild.solved-graph-lock.v2"
+
+[lock]
+platform = "amd64-linux"
+optimal = false
+inputs_digest = "fnv1a64:f9c494a80902b594"
+variants = []
+packages = [{ name = "ct_test_runner", version = "0.1.0", source = "ct_test_runner" }, { name = "gcc", version = "12.0.0", source = "gcc" }, { name = "nim", version = "2.2.0", source = "nim" }, { name = "repro_test_adapters", version = "0.1.0", source = "repro_test_adapters" }, { name = "reprobuild-test-adapters", version = "1.0.0", source = "reprobuild-test-adapters" }]
+deps = [{ name = "reprobuild-ct-test-runner", path = ".", coord_kind = "vcs", url = "https://github.com/metacraft-labs/reprobuild-ct-test-runner.git", ref = "main", revision = "e9c9e37e9a89b92d644ea50f4da8db5495c8c4ad", integrity = "git-sha1:e9c9e37e9a89b92d644ea50f4da8db5495c8c4ad", version = "", visibility = "public", participation = "", depends = "reprobuild-test-adapters", groups = "" }, { name = "reprobuild-test-adapters", path = "../reprobuild-test-adapters", coord_kind = "vcs", url = "https://github.com/metacraft-labs/reprobuild-test-adapters.git", ref = "main", revision = "2cd37a92d42345c12b672914795a778d37e1a731", integrity = "git-sha1:2cd37a92d42345c12b672914795a778d37e1a731", version = "", visibility = "public", participation = "", depends = "", groups = "" }]
