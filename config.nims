@@ -30,3 +30,12 @@ let reproTestAdaptersSrc =
     "../reprobuild-test-adapters/src"
 if dirExists(reproTestAdaptersSrc):
   switch("path", reproTestAdaptersSrc)
+
+# Imported packages do not execute their config.nims. Resolve the adapter's
+# leaf schema contract here as well, without importing any engine library.
+let runnerRoot = currentSourcePath().parentDir()
+let reprobuildRoot = getEnv("REPROBUILD_SRC", runnerRoot / ".." / "reprobuild")
+let ctTestInterfaceSrc = getEnv("CT_TEST_INTERFACE_SRC",
+  reprobuildRoot / "libs" / "ct_test_interface" / "src")
+if dirExists(ctTestInterfaceSrc):
+  switch("path", ctTestInterfaceSrc)
