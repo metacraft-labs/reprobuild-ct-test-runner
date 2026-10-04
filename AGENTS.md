@@ -17,10 +17,14 @@
 
 ## Boundaries
 
-- **ct-test does NOT import or depend on reprobuild.** The interface this repo
+- **ct-test does NOT import or depend on reprobuild's engine.** The interface this repo
   declares (`TestBinary`, `TestResultsHandle`, `TestCatalogHandle`) is
   consumed by reprobuild's typed-output machinery, but the dependency edge
   goes one way: reprobuild knows about ct-test; ct-test stays standalone.
+  The generic observation adapter does depend on the import-free
+  `ct_test_interface` schema contract currently hosted in reprobuild/libs.
+  `config.nims` resolves `CT_TEST_INTERFACE_SRC`, or `REPROBUILD_SRC`, or the
+  sibling checkout. This source dependency does not import the engine.
 
 - Per-framework adapter modules (`ct_test_nim_unittest`, future
   `ct_test_cargo`, etc.) live in separate `libs/` directories so consumers

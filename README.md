@@ -10,7 +10,7 @@ test binaries and dispatch enumeration / per-test execution as ordinary
 build-graph edges.
 
 The asymmetric coupling: **reprobuild knows the `TestBinary` interface
-declared here; ct-test does NOT know about reprobuild**. `ct-test-runner`
+declared here; ct-test does NOT import reprobuild's engine**. `ct-test-runner`
 will work standalone (e.g. against binaries produced by `nim c` directly)
 via its own probing logic; reprobuild's static type annotations on the
 `outputs` statement are an optimization, not a requirement.
@@ -41,6 +41,11 @@ in codetracer-specs:
 See `docs/` for design discussion.
 
 ## Building and testing
+
+The observation adapter uses the leaf `ct_test_interface` schema package in
+the sibling reprobuild checkout. Set `CT_TEST_INTERFACE_SRC` to its `src`
+directory, or `REPROBUILD_SRC` to an alternate checkout, when using another
+layout. This is a compile-time schema dependency, not an engine dependency.
 
 ```bash
 just build      # build any apps (none yet)
