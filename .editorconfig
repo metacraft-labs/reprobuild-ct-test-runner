@@ -1,0 +1,24 @@
+# Owning standalone rules preserve the effective workspace convention.
+# Native source/literal formatting remains governed by existing Nim lint.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+indent_size = unset
+
+# Nim continuation columns need not be multiples of two; retain the
+# existing effective rule while Nim style checks govern source syntax.
+[*.nim]
+indent_size = unset
+
+# Canonical license text keeps its original indentation.
+[LICENSE]
+indent_size = unset
